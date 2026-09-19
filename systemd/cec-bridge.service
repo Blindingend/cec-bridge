@@ -1,0 +1,16 @@
+[Unit]
+Description=cec-bridge - HDMI-CEC 补全中枢（小米电视）
+After=network.target
+
+[Service]
+Type=simple
+# CoreELEC 的持久化目录是 /storage，脚本和配置放这里
+WorkingDirectory=/storage/cec-bridge/src
+ExecStart=/usr/bin/python3 /storage/cec-bridge/src/cec_bridge.py /storage/cec-bridge/src/config.json
+Restart=always
+RestartSec=5
+# CoreELEC 默认以 root 运行，保留 root 以便访问 cec-client 与发送 ICMP
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,49 @@
+{
+  "cec_client": "cec-client",
+  "cec_client_args": ["-d", "8"],
+
+  "bridge": {
+    "logical_address": 4,
+    "physical_address": "3.0.0.0"
+  },
+
+  "tv": {
+    "logical_address": 0
+  },
+
+  "sources": [
+    {
+      "name": "ps5",
+      "physical_address": "1.0.0.0",
+      "logical_address": null,
+      "ping_host": null,
+      "wake_tv": true,
+      "auto_switch": true
+    },
+    {
+      "name": "appletv",
+      "physical_address": "2.0.0.0",
+      "logical_address": null,
+      "ping_host": "192.0.2.100",
+      "wake_tv": true,
+      "auto_switch": true
+    },
+    {
+      "name": "switch",
+      "physical_address": "2.0.0.0",
+      "logical_address": null,
+      "ping_host": null,
+      "wake_tv": true,
+      "auto_switch": true
+    }
+  ],
+
+  "features": {
+    "wake_tv": true,
+    "auto_switch": true,
+    "standby_devices": true,
+    "ping_interval": 5
+  },
+
+  "log_level": "INFO"
+}
