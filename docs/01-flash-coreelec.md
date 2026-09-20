@@ -1,7 +1,7 @@
 # 01 · 普通 KM2 的 CoreELEC USB 启动验证
 
 适用目标：**MECOOL KM2，非 Plus / Plus Deluxe，S905X2-B、2GB+8GB**。
-核对日期：2026-09-20。启动盘已经制作完成，**尚未在这台盒子上验证启动**。
+核对日期：2026-09-20。启动盘已制作完成，**并已在本机实测：无法从 USB 启动**（见下文结论）。
 
 ## 兼容性结论
 
@@ -9,7 +9,13 @@ CoreELEC 支持 S905X2 通用平台，但这不能证明 KM2 的 bootloader 允�
 [普通 KM2 的官方论坛讨论](https://discourse.coreelec.org/t/coreelec-on-mecool-km2-not-plus-possible/58438)
 没有提供成功方案。KM2 Plus 的失败记录、Plus Deluxe 的教程均不能直接套用。
 
-本文是**保留 Android、尝试 USB 启动**的验证流程，不是已验证的 KM2 刷机教程。
+**2026-09-20 实测确认**：本机（普通 KM2，model `LEAP-S1`）bootloader 锁定且加密
+（`vbmeta.device_state=locked`、`verifiedbootstate=green`）。先后试两个 USB 口、各执行
+一次 `adb reboot update`，均直接回到 Android，未出现 CoreELEC 标志。该型号因
+Netflix/Google 认证锁死 bootloader，与社区结论一致；**非认证的通用 S905X3/X4 盒子
+才是可刷 CoreELEC 的目标**。
+
+本文保留为**失败的验证记录**与同类排查参考，不再作为 KM2 的可行刷机教程。
 原文“AV 口内有 recovery 按钮”“零变砖风险”缺乏该型号依据，已撤回。
 外置启动避免主动覆盖 Android 系统分区，但引导脚本可能调整启动环境，不能承诺零风险。
 

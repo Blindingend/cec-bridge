@@ -3,9 +3,10 @@
 给「小米电视 6 至尊版」补全被阉割的 HDMI-CEC 能力的中枢脚本。运行在一台刷了
 **CoreELEC** 的 Amlogic 盒子（MECOOL KM2 / S905X2，2GB+8GB）上。
 
-> **硬件验证状态（2026-09-20）**：普通 KM2 的 CoreELEC USB 启动尚未验证。
-> S905X2 通用支持不等于 KM2 整机兼容；先按 [USB 启动验证流程](docs/01-flash-coreelec.md)
-> 核对固件并尝试外置启动，成功后再部署桥接服务。
+> **硬件验证状态（2026-09-20）**：普通 KM2 已实测——bootloader 锁定且加密，无法从
+> USB 启动 CoreELEC（两个 USB 口 + 两次 `adb reboot update` 均回 Android）。该型号因
+> Netflix/Google 认证锁死 bootloader，需换**非认证的通用 S905X3/X4 盒子**作桥接硬件。
+> 详见 [实测记录](docs/04-session-2026-09-20.md)。
 
 ## 背景问题
 
