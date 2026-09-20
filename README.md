@@ -3,6 +3,10 @@
 给「小米电视 6 至尊版」补全被阉割的 HDMI-CEC 能力的中枢脚本。运行在一台刷了
 **CoreELEC** 的 Amlogic 盒子（MECOOL KM2 / S905X2，2GB+8GB）上。
 
+> **硬件验证状态（2026-09-20）**：普通 KM2 的 CoreELEC USB 启动尚未验证。
+> S905X2 通用支持不等于 KM2 整机兼容；先按 [USB 启动验证流程](docs/01-flash-coreelec.md)
+> 核对固件并尝试外置启动，成功后再部署桥接服务。
+
 ## 背景问题
 
 小米电视 6 至尊版的 HDMI-CEC 是阉割版（软件/固件实现缺失，硬件 CEC 通路正常）：
@@ -39,7 +43,8 @@ cec-bridge/
 ├── docs/
 │   ├── 01-flash-coreelec.md    # KM2 刷 CoreELEC 步骤
 │   ├── 02-wiring.md            # 接线方案
-│   └── 03-deploy.md            # 部署与验证
+│   ├── 03-deploy.md            # 部署与验证
+│   └── 04-session-2026-09-20.md # USB 制作、测速与跨电脑交接
 ├── src/
 │   ├── cec_bridge.py           # 核心中枢脚本（零第三方依赖）
 │   └── config.example.json     # 配置模板
@@ -51,6 +56,9 @@ cec-bridge/
 ```
 
 ## 快速开始
+
+跨电脑继续操作，先读 [2026-09-20 操作记录与交接](docs/04-session-2026-09-20.md)：
+包含 U 盘制作与测速结果、镜像校验值、当前未验证事项，以及回家后的操作顺序。
 
 1. 刷 CoreELEC：见 `docs/01-flash-coreelec.md`
 2. 接线：见 `docs/02-wiring.md`
