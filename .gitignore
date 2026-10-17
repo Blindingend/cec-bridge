@@ -5,6 +5,13 @@ __pycache__/
 
 # 真实配置（含设备 IP 等隐私，不入库）
 src/config.json
+legacy/coreelec/src/config.json
+
+# APK / 签名产物
+tv-side/apk/unsigned.apk
+tv-side/apk/classes.dex
+*.keystore
+*.jks
 
 # 系统
 .DS_Store
