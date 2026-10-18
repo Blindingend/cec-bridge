@@ -36,8 +36,9 @@ reason 8 息屏时，Android 的 CEC 栈仍在运行：仍能收发 CEC、仍每
 
 ### 2. 唤醒 + 切输入（最终顺序）
 
-1. 休眠中每 2 s 读 `dumpsys hdmi_control` 的 CEC history，匹配 `<Image View On>`、
-   `<Text View On>`、`<Active Source>`、或 `<Report Power Status params: 00>`（src ≠ 0）。
+1. 休眠中每 2 s 读 `dumpsys hdmi_control` 的 CEC history，**只匹配显式唤醒消息**：
+   `<Image View On>`、`<Text View On>`、`<Active Source>`（src ≠ 0）。不用
+   `<Report Power Status params: 00>` 做触发，避免把轮询回复/待机误报当成开机。
 2. 先唤醒：`service call power 9 i64 <mLastSleepTime+1> s16 'android.policy:POWER' s16 android`。
    root 域读不到 `/proc/uptime`，所以用 dumpsys 的 `mLastSleepTime` 作为 eventTime。
 3. 等 `mWakefulness=Awake`，再 sleep 2 s 让 tvhome 落定。
@@ -53,11 +54,13 @@ reason 8 息屏时，Android 的 CEC 栈仍在运行：仍能收发 CEC、仍每
 ### 3. 关机联动（缺陷 ③）
 
 电视进入 Asleep 后 3 s，桥接向 CEC 总线上所有非 0 logical address 发 `<Standby>`：
-`service call hdmi_control 30 i32 0 i32 <logical>`。Apple TV（logical 8）和 PS5（logical 4）
-都会收到；Apple TV 正常会进入待机。reason 8 下电视自己不会发，必须由桥接补。
+`service call hdmi_control 30 i32 0 i32 <logical>`。地址统一按两位十六进制解析
+（`0x0B`/`0x0b` 等价），Apple TV（8）、PS5（4）、Switch（0x0B）走同一套规则。
+reason 8 下电视自己不会发，必须由桥接补。
 
-进入睡眠后 10 s 内忽略 `<Report Power Status params: 00>`：外设若仍醒着，会对 60 s 轮询回 00，
-旧逻辑会把电视刚睡就重新唤醒；`<Active Source>` / `<Image View On>` 不受此限制。
+不使用 `<Report Power Status params: 00>` 触发唤醒：外设待机或轮询时可能错误回报 00，
+用它做触发会让电视刚睡就被叫醒。真正唤醒时设备应发送显式的 `<Active Source>` /
+`<Text View On>` / `<Image View On>`。
 
 ### 4. 电视状态检测
 

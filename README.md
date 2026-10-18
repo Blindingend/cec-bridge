@@ -55,8 +55,9 @@ Apple TV / PS5 ──HDMI-CEC──> 小米电视
    - 该机型不给第三方 App 发 `BOOT_COMPLETED`，所以不能只靠广播。
 
 2. **唤醒 + 切输入**
-   - 息屏时每 2 秒读 CEC history，匹配 `<Image View On>`、`<Text View On>`、
-     `<Active Source>`、或 `<Report Power Status params: 00>`（src ≠ 0）。
+   - 息屏时每 2 秒读 CEC history，**只匹配显式唤醒消息**：`<Image View On>`、
+     `<Text View On>`、`<Active Source>`（src ≠ 0）。不使用 `Report Power Status 00`
+     做唤醒触发，避免把 60 秒轮询回复或待机误报当成开机。
    - 先通过 `service call power 9 ...` 唤醒（root 域读不到 `/proc/uptime`，用
      `mLastSleepTime` 作 eventTime）。
    - 等 `mWakefulness=Awake`，sleep 2 秒让 tvhome 落定，再通过 `TvService` transaction 3000

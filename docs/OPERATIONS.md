@@ -96,7 +96,7 @@ reason 6（KEYCODE_SLEEP）行为正常，可作对照。详细证据见 `FINDIN
 ## 5. 已验证结果（2026-10-18）
 
 - **休眠中 CEC 收发正常**：reason-8 息屏期间电视仍每 60 s 发 `<Give Device Power Status>`
-  并收到两台设备的 `<Report Power Status params: 01>`；history 持续更新。
+  并收到各设备的 `<Report Power Status params: 01>`；history 持续更新。
   这是整个触发方案成立的前提。
 - **唤醒 + 预切输入**：用模拟 CEC history（`CEC_TEST_HIST`）在休眠中注入 `<Active Source>`
   src=8，守护进程成功唤醒并切到 HDMI1：`wake preselect ok src=8 path=0x1000`，
