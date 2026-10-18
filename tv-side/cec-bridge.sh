@@ -51,16 +51,24 @@ power_asleep() {
 last_hist_line() { hist_lines | tail -1; }
 
 input_for_src() {
-  # $1 = decimal logical address -> mitv tvplayer input id (HDMI1=23 ... HDMI4=26)
-  local line port
-  line=$(hdmi_dump | grep "CEC: logical_address: 0x0$1 " | grep -v 'logical_address: 0x00 ' | head -1)
-  port=$(printf '%s' "$line" | sed -n 's/.*port_id: \([0-9][0-9]*\).*/\1/p')
+  # $1 = decimal CEC logical address -> mitv tvplayer input id (HDMI1=23 ... HDMI4=26).
+  # Parse the address as hex and map only via the TV's own port_id; never guess a port.
+  local hex port
+  hex=$(printf '%02x' "$1")
+  port=$(hdmi_dump \
+    | grep -i "CEC: logical_address: 0x${hex} " \
+    | sed -n 's/.*port_id: \([0-9][0-9]*\).*/\1/p' \
+    | head -1)
+  if [ -z "$port" ]; then
+    log "input_for_src: no CEC device for logical 0x${hex}"
+    return 1
+  fi
   case "$port" in
     1) echo 23 ;;
     2) echo 24 ;;
     3) echo 25 ;;
     4) echo 26 ;;
-    *) echo 23 ;;
+    *) log "input_for_src: unsupported port_id=$port for logical 0x${hex}"; return 1 ;;
   esac
 }
 
@@ -76,13 +84,13 @@ resumed_is_external() {
 
 do_wake() {
   local src="$1" input want path n t
-  input=$(input_for_src "$src")
+  input=$(input_for_src "$src") || { log "wake aborted: no input mapping for src=$src"; return; }
   case "$input" in
     23) want=0x1000 ;;
     24) want=0x2000 ;;
     25) want=0x3000 ;;
     26) want=0x4000 ;;
-    *)  want=0x1000 ;;
+    *)  log "wake aborted: invalid input=$input for src=$src"; return ;;
   esac
   log "wake trigger: src logical=$src input=$input"
 
@@ -132,7 +140,12 @@ do_wake() {
 
 send_standby_all() {
   local a addrs
-  addrs=$(hdmi_dump | sed -n 's/.*CEC: logical_address: 0x\([0-9a-f][0-9a-f]\) .*/\1/p' | sort -u)
+  # CEC displays logical addresses as two hex digits; dumpsys uses uppercase
+  # for A-F (e.g. the Switch is 0x0B). Normalize before converting to decimal.
+  addrs=$(hdmi_dump \
+    | sed -n 's/.*CEC: logical_address: 0x\([0-9A-Fa-f][0-9A-Fa-f]\) .*/\1/p' \
+    | tr 'A-F' 'a-f' \
+    | sort -u)
   for a in $addrs; do
     [ "$a" = "00" ] && continue
     "$SERVICE" call hdmi_control 30 i32 0 i32 "$((0x$a))" >>"$LOG" 2>&1
@@ -167,8 +180,6 @@ keepadb_tick() {
 SEEN=""
 prev_asleep=""
 last_wake=0
-sleep_grace_until=0
-ps5_ignore_logged=0
 tick=0
 
 while true; do
@@ -177,13 +188,6 @@ while true; do
   [ $((tick % 5)) -eq 0 ] && keepadb_tick
 
   if power_asleep; then asleep=1; else asleep=0; fi
-
-  if [ "$asleep" = "1" ] && [ "$prev_asleep" != "1" ]; then
-    # Grace period for the 60 s power-status poll reply from devices that are
-    # still awake while our <Standby> is being sent.
-    sleep_grace_until=$(($(date +%s) + 10))
-    ps5_ignore_logged=0
-  fi
 
   if [ "$asleep" = "1" ]; then
     HIST=$(hist_lines)
@@ -205,28 +209,11 @@ while true; do
         case "$line" in
           *'message=<Image View On>'*|*'message=<Text View On>'*|*'message=<Active Source>'*)
             src=$(printf '%s' "$line" | sed -n 's/.*src: \([0-9][0-9]*\).*/\1/p')
-            if [ -n "$src" ] && [ "$src" != "0" ]; then TRIG=$src; break; fi
-            ;;
-          *'message=<Report Power Status>'*'params: 00'*)
-            src=$(printf '%s' "$line" | sed -n 's/.*src: \([0-9][0-9]*\).*/\1/p')
-            # The PS5 in rest mode replies POWER_STATUS_ON ("00") to the TV's
-            # 60 s poll, and it does not honor our directed <Standby>. Waking
-            # the TV on that reply makes the TV's CEC routing response wake the
-            # PS5 fully, producing a sleep/wake loop. Only trust PS5's explicit
-            # <Active Source>/<Text View On>/<Image View On> as a wake request.
-            if [ "$src" = "4" ]; then
-              if [ "$ps5_ignore_logged" = "0" ]; then
-                log "ignore PS5 power-status 00 (rest-mode misreport)"
-                ps5_ignore_logged=1
-              fi
-              continue
+            if [ -n "$src" ] && [ "$src" != "0" ]; then
+              log "wake match: $line"
+              TRIG=$src
+              break
             fi
-            # While asleep we poll power status every 60 s. If a device is
-            # still awake when sleep starts, its "00" reply can arrive before
-            # our <Standby> lands; ignore it briefly so the TV does not wake
-            # itself back up.
-            if [ "$(date +%s)" -lt "$sleep_grace_until" ]; then continue; fi
-            if [ -n "$src" ] && [ "$src" != "0" ]; then TRIG=$src; break; fi
             ;;
         esac
       done

@@ -81,11 +81,13 @@ CEC 侧无法区分息屏与开机（息屏时 `mPowerStatus=0`，且仍每分�
 - 电视：logical 0，vendor 60426，name `MiTV-MFZP0`；4 个 HDMI 口 CEC 全开，port 2 ARC。
 - Apple TV：logical 8，vendor 4346，physical **0x1000（HDMI1 口）**，power_status 0/1。
 - PS5：logical 4，vendor 524358，physical **0x2000（HDMI2 口）**。
-  接线可能因批次/改机而不同；桥接脚本按 CEC 广播里的 physical address 动态换算 HW 端口
-  （0x1000→23、0x2000→24），不要硬编码。
-- PS5 在 rest mode 下对 60 s 一次的 `<Give Device Power Status>` 仍回报
-  `Report Power Status 00`（power on），且不执行桥接发出的 directed `<Standby>`。
-  这会让电视误判“PS5 已开机”，进而唤醒电视并触发 CEC 路由，把 PS5 也完全唤醒。
+  接线可能因批次/改机而不同；桥接按 TV 的 `port_id` 映射（1→23、2→24、3→25、4→26），
+  `physical_address` 用于现场核对，不直接硬编码。
+- Switch 2：logical **0x0B**（不是 `0x0b` 小写），vendor 2495，physical **0x3000** →
+  HDMI3 → input **25**（`0x3000`）。
+- PS5 / Switch 在待机或轮询时都可能回报 `Report Power Status 00`（power on），
+  PS5 还不会执行桥接发出的 directed `<Standby>`。用 00 做唤醒触发会让电视在 60 s
+  轮询后反复被叫醒，并触发 CEC 路由把设备完全唤醒；因此桥接不再用 00 触发。
 - `mAutoWakeup: true`、`mAutoDeviceOff: true`，设置 `hdmi_control_auto_wakeup_enabled=1`、
   `hdmi_control_auto_device_off_enabled=1`；`hdmi_control_auto_shutdown` 未设置（默认关）。
 - 电视在 xiaoai 息屏时仍每 60 s 向各设备发 `<Give Device Power Status>`，CEC HAL 与 Android 栈保持运行。
@@ -97,10 +99,11 @@ CEC 侧无法区分息屏与开机（息屏时 `mPowerStatus=0`，且仍每分�
   不需要外接常开机器。
 - 切输入必须同时校验 routing path 和前台 Activity；只校验 path 会在 Apple TV 先发
   `<Active Source>` 时误判。
-- 睡眠后 10 s 内忽略 `<Report Power Status params: 00>`，避免轮询回报触发“刚睡就醒”。
-- **PS5 特例**：对 logical 4 的 `Report Power Status 00` 永久忽略，只认
-  `<Active Source>` / `<Text View On>` / `<Image View On>`。否则电视每次 60 s 轮询都会
-  被 PS5 的 00 唤醒，形成睡眠/唤醒循环。
+- **唤醒只认显式 CEC 消息**：`<Image View On>`、`<Text View On>`、`<Active Source>`。
+  不用 `<Report Power Status params: 00>` 做唤醒触发；它可能是 60 s 轮询回复或待机误报，
+  PS5 和 Switch 都曾因此把电视反复叫醒。
+- logical address 统一按两位十六进制解析（`0x0B` 与 `0x0b` 等价），输入只通过 TV 自己的
+  `port_id` 映射（1→23、2→24、3→25、4→26）；查不到设备/端口时不猜默认值，记日志并放弃切源。
 - 建议电视固定 DHCP、保留 ADB 授权；`keep-adb` 标记文件可选启用 ADB 自愈。
 - 电视真关机时 ADB 不可达，但此时原生 CEC 唤醒可用，两条路径互补。
 - TvService 事务号、Activity 名称、CEC logical address 都可能随固件/设备变化，升级后需重新核对。
@@ -113,12 +116,15 @@ CEC 侧无法区分息屏与开机（息屏时 `mPowerStatus=0`，且仍每分�
   path 已对但前台不对时仍强制拉起 `ExternalSourceActivity`；实测 02:23:35 强制切输入、
   02:23:38 `path=0x1000`，前台为 `ExternalSourceActivity t7`。
 - `port_id ↔ 物理 HDMI 口` 已现场确认：Apple TV port 1 → input 23（0x1000），
-  PS5 port 2 → input 24（0x2000）。
-- **PS5 误报已解决（2026-10-18 12:39 / 15:19 实测）**：12:39:13 息屏、12:39:16 发
-  `<Standby>`，12:39:47 PS5 回 `Report Power Status 00`；桥接按 src=4 规则忽略，
-  电视保持 Asleep 至 12:42:27 之后未醒。15:19:38 PS5 主动发 `<Text View On>` +
-  `<Active Source>`，15:19:39 正常唤醒并切到 `path=0x2000`。结论：PS5 不执行
-  directed `<Standby>`，但忽略其 00 后既能保持电视睡眠，也不影响用户主动唤醒 PS5。
-- 已修复“刚睡就醒”竞态：进入息屏后 10 s 内忽略 `<Report Power Status params: 00>`，
-  避免仍醒着的外设被 60 s 轮询回报 00 时把电视重新唤醒。
+  PS5 port 2 → input 24（0x2000），Switch port 3 → input 25（0x3000）。
+- **通用规则实测（2026-10-18 18:38–21:52）**：
+  - 18:38:07 息屏后向 logical 4/8/11 全部发 `<Standby>`；之后电视持续 Asleep，
+    PS5/Switch 的轮询 00 不再触发唤醒。
+  - 21:52:44 Switch（0x0B）发 `<Image View On>` + `<Active Source>`（0x3000）；
+    21:52:45 `wake trigger: src logical=11 input=25`；21:52:49 `path=0x3000`；
+    同一时刻 Apple TV 仍为 `power_status 01`，没有被误唤醒。
+  - PS5 的主动唤醒（15:19:38 `<Text View On>` + `<Active Source>`）同样正常。
+- **旧逻辑的两个具体 bug（已移除）**：
+  - `input_for_src` 用 `0x0$1` 拼地址，logical 11 变成 `0x011` 查不到，于是默认 23（Apple TV）；
+  - `send_standby_all` 的 `[0-9a-f]` 不匹配大写 `0x0B`，Switch 从未收到 Standby。
 - 缺陷 ④（无信号超时回主页）是电视设置项，无需桥接干预；必要时可 `settings put` 关闭。

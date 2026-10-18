@@ -67,14 +67,16 @@ Apple TV / PS5 ──HDMI-CEC──> 小米电视
 
 3. **关机联动**
    - 检测到 Awake → Asleep 后 3 秒，向 CEC 总线上所有非 0 logical address 发
-     `<Standby>`，Apple TV（logical 8）和 PS5（logical 4）都会收到。
-   - 进入睡眠后 10 秒内忽略 `<Report Power Status params: 00>`，避免仍醒着的外设被
-     60 秒轮询回报 00 时把电视刚睡就唤醒。
-   - **PS5 特例**：PS5 在 rest mode 下会错误回报 `Report Power Status 00`，且不执行
-     我们发的 directed `<Standby>`。桥接对 PS5（logical 4）的 `Report Power Status 00`
-     永久忽略，只把 `<Active Source>` / `<Text View On>` / `<Image View On>` 当作唤醒请求，
-     避免“电视一睡、PS5 一回报、电视又醒”的循环。若希望 PS5 真正跟随电视睡眠，请在
-     PS5 设置中开启 `Settings > System > HDMI > Enable Power Off Link`。
+     `<Standby>`。地址按两位十六进制通用解析（`0x0B` 与 `0x0b` 等价），输入按
+     `port_id` 映射（1→HDMI1/23、2→HDMI2/24、3→HDMI3/25、4→HDMI4/26），
+     Apple TV、PS5、Switch 走同一套规则，没有逐设备硬编码。
+   - **唤醒只认显式 CEC 消息**：`<Image View On>`、`<Text View On>`、`<Active Source>`。
+     不再用 `<Report Power Status params: 00>` 触发唤醒——它既可能是 60 秒轮询的回复，
+     也可能是待机设备的误报，PS5 和 Switch 都曾因此把电视反复叫醒。
+   - 因此不需要 `src=4` 之类的设备特例；任何新设备接入，只要 CEC logical address 在
+     0x01–0x0F 且 `port_id` 在 1–4，就会自动获得正确的唤醒、切源和 Standby 行为。
+   - 设备是否真正跟随电视睡眠仍取决于设备自身 CEC 设置；例如 PS5 需要开启
+     `Settings > System > HDMI > Enable Power Off Link`。
 
 4. **ADB 自愈（可选）**
    - 存在 `keep-adb` 标记文件时，守护进程每 10 秒检查 `init.svc.adbd`，掉线时通过
@@ -160,11 +162,13 @@ adb shell 'tail -f /storage/emulated/0/cec-bridge/daemon.log'
   自己的 key 重新签名，否则与其他签名版本不能互相升级。
 - 仅在一台 `MiTV-MFZP0` / Android 9 上验证；不同固件的事务号、Activity 名称、CEC 行为
   可能不同，升级后需重新核对。
-- Apple TV / PS5 的 CEC 行为取决于各自设置；关闭 CEC 控制后桥接无法联动。
-- PS5 的 CEC 实现会忽略 directed `<Standby>` 并错误回报 `power_status 00`。桥接因此
-  不会把 PS5 的 `00` 当作唤醒信号；如果希望 PS5 跟随电视睡眠，需在 PS5 开启
-  `Settings > System > HDMI > Enable Power Off Link`。
-- 本项目与小米、Apple、索尼无关联；使用风险自负。
+- Apple TV / PS5 / Switch 的 CEC 行为取决于各自设置；关闭 CEC 控制后桥接无法联动。
+- 唤醒只认显式 `<Active Source>` / `<Text View On>` / `<Image View On>`；
+  `Report Power Status 00` 不作为唤醒源，避免 PS5/Switch 的轮询误报把电视叫醒。
+- 设备不执行 directed `<Standby>` 时（例如 PS5 的某些固件），电视不会被它反过来叫醒；
+  若希望设备跟随电视睡眠，需在设备侧开启 CEC Power Off Link（PS5：
+  `Settings > System > HDMI > Enable Power Off Link`）。
+- 本项目与小米、Apple、索尼、任天堂无关联；使用风险自负。
 
 ## 许可证
 
