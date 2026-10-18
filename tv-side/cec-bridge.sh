@@ -168,6 +168,7 @@ SEEN=""
 prev_asleep=""
 last_wake=0
 sleep_grace_until=0
+ps5_ignore_logged=0
 tick=0
 
 while true; do
@@ -181,6 +182,7 @@ while true; do
     # Grace period for the 60 s power-status poll reply from devices that are
     # still awake while our <Standby> is being sent.
     sleep_grace_until=$(($(date +%s) + 10))
+    ps5_ignore_logged=0
   fi
 
   if [ "$asleep" = "1" ]; then
@@ -206,12 +208,24 @@ while true; do
             if [ -n "$src" ] && [ "$src" != "0" ]; then TRIG=$src; break; fi
             ;;
           *'message=<Report Power Status>'*'params: 00'*)
+            src=$(printf '%s' "$line" | sed -n 's/.*src: \([0-9][0-9]*\).*/\1/p')
+            # The PS5 in rest mode replies POWER_STATUS_ON ("00") to the TV's
+            # 60 s poll, and it does not honor our directed <Standby>. Waking
+            # the TV on that reply makes the TV's CEC routing response wake the
+            # PS5 fully, producing a sleep/wake loop. Only trust PS5's explicit
+            # <Active Source>/<Text View On>/<Image View On> as a wake request.
+            if [ "$src" = "4" ]; then
+              if [ "$ps5_ignore_logged" = "0" ]; then
+                log "ignore PS5 power-status 00 (rest-mode misreport)"
+                ps5_ignore_logged=1
+              fi
+              continue
+            fi
             # While asleep we poll power status every 60 s. If a device is
             # still awake when sleep starts, its "00" reply can arrive before
             # our <Standby> lands; ignore it briefly so the TV does not wake
             # itself back up.
             if [ "$(date +%s)" -lt "$sleep_grace_until" ]; then continue; fi
-            src=$(printf '%s' "$line" | sed -n 's/.*src: \([0-9][0-9]*\).*/\1/p')
             if [ -n "$src" ] && [ "$src" != "0" ]; then TRIG=$src; break; fi
             ;;
         esac

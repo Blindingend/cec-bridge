@@ -70,6 +70,11 @@ Apple TV / PS5 ──HDMI-CEC──> 小米电视
      `<Standby>`，Apple TV（logical 8）和 PS5（logical 4）都会收到。
    - 进入睡眠后 10 秒内忽略 `<Report Power Status params: 00>`，避免仍醒着的外设被
      60 秒轮询回报 00 时把电视刚睡就唤醒。
+   - **PS5 特例**：PS5 在 rest mode 下会错误回报 `Report Power Status 00`，且不执行
+     我们发的 directed `<Standby>`。桥接对 PS5（logical 4）的 `Report Power Status 00`
+     永久忽略，只把 `<Active Source>` / `<Text View On>` / `<Image View On>` 当作唤醒请求，
+     避免“电视一睡、PS5 一回报、电视又醒”的循环。若希望 PS5 真正跟随电视睡眠，请在
+     PS5 设置中开启 `Settings > System > HDMI > Enable Power Off Link`。
 
 4. **ADB 自愈（可选）**
    - 存在 `keep-adb` 标记文件时，守护进程每 10 秒检查 `init.svc.adbd`，掉线时通过
@@ -156,6 +161,9 @@ adb shell 'tail -f /storage/emulated/0/cec-bridge/daemon.log'
 - 仅在一台 `MiTV-MFZP0` / Android 9 上验证；不同固件的事务号、Activity 名称、CEC 行为
   可能不同，升级后需重新核对。
 - Apple TV / PS5 的 CEC 行为取决于各自设置；关闭 CEC 控制后桥接无法联动。
+- PS5 的 CEC 实现会忽略 directed `<Standby>` 并错误回报 `power_status 00`。桥接因此
+  不会把 PS5 的 `00` 当作唤醒信号；如果希望 PS5 跟随电视睡眠，需在 PS5 开启
+  `Settings > System > HDMI > Enable Power Off Link`。
 - 本项目与小米、Apple、索尼无关联；使用风险自负。
 
 ## 许可证

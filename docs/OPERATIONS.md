@@ -63,9 +63,13 @@ reason 6（KEYCODE_SLEEP）行为正常，可作对照。详细证据见 `FINDIN
   `lock` 目录防重复实例。
 - 休眠中每 2 s 读 `dumpsys hdmi_control` 的 CEC history，匹配以下消息触发唤醒：
   `<Image View On>`、`<Text View On>`、`<Active Source>`、
-  `<Report Power Status>` 且 `params: 00`（且 src ≠ 0）。20 s 冷却。
+  `<Report Power Status>` 且 `params: 00`（且 src ≠ 0；**PS5 logical 4 除外**）。20 s 冷却。
   进入睡眠后 10 s 内忽略 `<Report Power Status params: 00>`：外设若仍醒着，会对 60 s 轮询
   回 00，旧逻辑会把电视刚睡就重新唤醒；`<Active Source>`/`<Image View On>` 不受此限制。
+- **PS5 特例**：PS5 在 rest mode 下会错误回报 `Report Power Status 00`，且不执行我们发的
+  directed `<Standby>`。因此对 src=4 的 `Report Power Status 00` **永久忽略**，只认它的
+  `<Active Source>` / `<Text View On>` / `<Image View On>`。否则电视每 60 s 轮询一次，
+  PS5 回报一次 00，电视就被重新唤醒，随后 CEC 路由响应又把 PS5 完全唤醒，形成睡眠/唤醒循环。
 - 唤醒顺序（重要）：**先 wakeUp，等 Awake，sleep 2 s 让主页落定，再启动输入 Activity，
   最后同时校验 `mActiveRoutingPath` 和 `mResumedActivity`**。反序会被唤醒后的 tvhome 覆盖。
 - ⚠️ 只校验 `mActiveRoutingPath` 不够：Apple TV 的 `<Active Source>` 会先把 path 置成
@@ -107,7 +111,16 @@ reason 6（KEYCODE_SLEEP）行为正常，可作对照。详细证据见 `FINDIN
 - **睡眠自唤醒竞态（已修）**：02:20:36 电视刚睡时，仍醒着的 Apple TV 对 60 s 轮询回
   `<Report Power Status params: 00>`，旧逻辑立即触发唤醒，电视 2 s 后自己亮起。
   新逻辑在睡眠后 10 s 内忽略该回报；02:21:52 再睡后保持 Asleep，Standby 正常发出。
-- **关机联动**：进入息屏后 `[S] <Standby> src: 0, dst: 4/8` 已发出。
+- **PS5 误报 / 唤醒实测（2026-10-18 12:39–15:19）**：
+  - 12:39:13 息屏，12:39:16 向 4/8 发 `<Standby>`；12:39:47 PS5 回
+    `Report Power Status 00`，12:39:49 按 PS5 规则忽略；电视保持 Asleep 直到 12:42:27
+    之后仍未醒。
+  - 15:19:38 PS5 主动发 `<Text View On>` + `<Active Source>`；15:19:39 桥接唤醒，
+    15:19:42 切到 `path=0x2000`，`mResumedActivity=ExternalSourceActivity`，PS5 画面正常。
+  - 结论：PS5 不执行 directed `<Standby>`，但桥接不再因它的 00 误唤醒；用户主动唤醒
+    PS5 仍能正常亮屏并切 HDMI2。
+- **关机联动**：进入息屏后 `[S] <Standby> src: 0, dst: 4/8` 已发出；Apple TV 会进入待机，
+  PS5 可能忽略该 Standby（需在 PS5 开启 Power Off Link 才能跟随睡眠）。
 - **ADB 自愈 / 开机自启**：persisted JobScheduler 在重启后拉起 App、launch.sh 恢复 adbd；
   运行期看门狗继续生效。
 - **WOL 失败**：向 Apple TV 的 ARP MAC 与 AirPlay deviceid MAC 发 magic packet 均未唤醒
