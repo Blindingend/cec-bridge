@@ -118,6 +118,9 @@ CEC 侧无法区分息屏与开机（息屏时 `mPowerStatus=0`，且仍每分�
   仍可能是 `com.mitv.tvhome`；仅凭 path 判定会漏切输入。桥接已改为“path + 前台 Activity”双条件，
   path 已对但前台不对时仍强制拉起 `ExternalSourceActivity`；实测 02:23:35 强制切输入、
   02:23:38 `path=0x1000`，前台为 `ExternalSourceActivity t7`。
+- **Apple TV 显式唤醒复测（2026-10-18 21:57）**：21:57:52 ATV 发
+  `<Image View On> src: 8`；21:57:53 `wake trigger: src logical=8 input=23`；
+  21:57:59 `path=0x1000`。确认移除 `Report Power Status 00` 触发后，ATV 仍正常。
 - `port_id ↔ 物理 HDMI 口` 已现场确认：Apple TV port 1 → input 23（0x1000），
   PS5 port 2 → input 24（0x2000），Switch port 3 → input 25（0x3000）。
 - **通用规则实测（2026-10-18 18:38–21:52）**：

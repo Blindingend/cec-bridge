@@ -107,6 +107,10 @@ reason 6（KEYCODE_SLEEP）行为正常，可作对照。详细证据见 `FINDIN
   02:23:38 `wake preselect ok src=8 path=0x1000`；随后
   `mResumedActivity=ExternalSourceActivity t7`、`mActiveSource=(0x08,0x1000)`，
   屏幕停在 Apple TV 输入。此前 02:13 的失败是旧逻辑只校验 path、误判“已切好”直接返回。
+- **Apple TV 显式唤醒复测（2026-10-18 21:57）**：21:57:52 Apple TV 发
+  `<Image View On> src: 8`；21:57:53 `wake trigger: src logical=8 input=23`；
+  21:57:59 `wake preselect ok src=8 path=0x1000`。确认移除 `Report Power Status 00`
+  触发后，ATV 仍通过显式 CEC 消息正常唤醒。
 - **通用唤醒策略实测（2026-10-18 18:38–21:52）**：
   - 18:38:07 息屏，18:38:10 向 logical 4/8/11 全部发 `<Standby>`；之后电视持续 Asleep，
     期间 PS5/Switch 的轮询回报不再触发唤醒。
