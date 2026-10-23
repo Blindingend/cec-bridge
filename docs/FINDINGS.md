@@ -1,6 +1,7 @@
 # 小米电视 6 至尊版 (L65M7-Z1 / walle) HDMI-CEC 逆向结论
 
-日期：2026-10-18 · 设备：<TV_IP>（ADB）· Android 9 / MT9950 / user build / 无 root
+初次记录：2026-10-18；更新：2026-10-23 · Android 9 / MT9950 / user build。
+未安装通用 su；桥接通过厂商诊断服务以 uid 0 运行，仍受 SELinux 限制。
 
 ## 一、根因（实测确认）
 
@@ -36,27 +37,33 @@ reason 8 息屏时，Android 的 CEC 栈仍在运行：仍能收发 CEC、仍每
 
 ### 2. 唤醒 + 切输入（最终顺序）
 
-1. 休眠中每 2 s 读 `dumpsys hdmi_control` 的 CEC history，**只匹配显式唤醒消息**：
+1. 亮屏和休眠中均约每 2 s 读 `dumpsys hdmi_control` 的 CEC history，**只匹配收到的显式请求**：
    `<Image View On>`、`<Text View On>`、`<Active Source>`（src ≠ 0）。不用
    `<Report Power Status params: 00>` 做触发，避免把轮询回复/待机误报当成开机。
-2. 先唤醒：`service call power 9 i64 <mLastSleepTime+1> s16 'android.policy:POWER' s16 android`。
+2. 仅在休眠时先唤醒：`service call power 9 i64 <mLastSleepTime+1> s16 'android.policy:POWER' s16 android`。
    root 域读不到 `/proc/uptime`，所以用 dumpsys 的 `mLastSleepTime` 作为 eventTime。
-3. 等 `mWakefulness=Awake`，再 sleep 2 s 让 tvhome 落定。
+3. 唤醒后等 `mWakefulness=Awake`，再 sleep 2 s 让 tvhome 落定；本来亮屏时直接切输入。
 4. 再切输入：`service call TvService 3000 ... ExternalSourceActivity --ei input 23`。
-5. **同时校验** `mActiveRoutingPath` 和 `mResumedActivity`。Apple TV 的 `<Active Source>`
-   会先把 path 置成 `0x1000`，但前台可能仍是 `com.mitv.tvhome`；如果只看 path 就提前返回，
-   屏幕会停在主页。path 已对但前台不是 `ExternalSourceActivity` 时，仍要强制拉起输入 Activity，
-   最多重试 5 次，两者都满足才算成功。
+5. **不能在调用前凭 path + Activity 跳过输入选择**。Apple TV 的 `<Active Source>` 会先把
+   path 置成 `0x1000`，前台可能仍是主页，也可能是正在显示 PS5 的同一个
+   `ExternalSourceActivity`。每个新请求至少执行一次实际切输入；最多尝试 5 次，调用后
+   用 `mActiveRoutingPath` 和 `mResumedActivity` 检查系统状态，最终画面仍需实机确认。
+
+2026-10-23 review 确认旧循环仅在 Asleep 分支处理事件，Awake 分支直接推进游标。
+因此“关闭 PS5、电视仍亮屏、再开 Apple TV”会漏掉切源。已统一两个状态的事件处理，
+移除跨设备的全局 20 秒冷却；同设备请求合并，最新请求取消旧工作进程。
 
 > 早期设想的“先预切输入，再 `keyevent 26` 唤醒”会被唤醒后的 tvhome 覆盖，已废弃。
 > `keyevent 26` 现在只作为手动调试入口。
 
 ### 3. 关机联动（缺陷 ③）
 
-电视进入 Asleep 后 3 s，桥接向 CEC 总线上所有非 0 logical address 发 `<Standby>`：
+电视进入 Asleep 至少 3 s 后，桥接向 CEC 总线上已发现的 logical address 1–14 发 `<Standby>`：
 `service call hdmi_control 30 i32 0 i32 <logical>`。地址统一按两位十六进制解析
 （`0x0B`/`0x0b` 等价），Apple TV（8）、PS5（4）、Switch（0x0B）走同一套规则。
 reason 8 下电视自己不会发，必须由桥接补。
+2026-10-23 起延迟待机由主循环管理；电视亮屏或出现新切源请求则取消，发送每条指令前再查
+电源状态，避免旧后台任务把刚唤醒的设备关掉。
 
 不使用 `<Report Power Status params: 00>` 触发唤醒：外设待机或轮询时可能错误回报 00，
 用它做触发会让电视刚睡就被叫醒。真正唤醒时设备应发送显式的 `<Active Source>` /
@@ -100,8 +107,8 @@ CEC 侧无法区分息屏与开机（息屏时 `mPowerStatus=0`，且仍每分�
 
 - 桥接运行在电视本机：root 守护进程读取 `dumpsys`，通过 TvService / PowerManager 原语操作，
   不需要外接常开机器。
-- 切输入必须同时校验 routing path 和前台 Activity；只校验 path 会在 Apple TV 先发
-  `<Active Source>` 时误判。
+- 切输入每次新请求必须先执行选择命令，再校验 routing path 和前台 Activity；这两个值
+  不能用作调用前的短路条件，因为不同 HDMI 输入共用同一 Activity。
 - **唤醒只认显式 CEC 消息**：`<Image View On>`、`<Text View On>`、`<Active Source>`。
   不用 `<Report Power Status params: 00>` 做唤醒触发；它可能是 60 s 轮询回复或待机误报，
   PS5 和 Switch 都曾因此把电视反复叫醒。

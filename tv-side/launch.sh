@@ -8,6 +8,7 @@ LLOG=$BASE/launch.log
 SERVICE=/system/bin/service
 
 mkdir -p "$BASE" 2>/dev/null
+[ -f "$BASE/disabled" ] && exit 0
 sz=$(stat -c %s "$LLOG" 2>/dev/null)
 if [ -n "$sz" ] && [ "$sz" -gt 262144 ]; then mv -f "$LLOG" "$LLOG.1"; fi
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$$] $*" >> "$LLOG"; }

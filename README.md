@@ -7,6 +7,10 @@
 > 早期“外接 CoreELEC 盒子”方案因目标盒子 bootloader 锁定已归档到
 > [`legacy/coreelec/`](legacy/coreelec/README.md)。
 
+> **2026-10-23 修复**：增加电视亮屏时的自动切源，覆盖“关闭 PS5 后打开 Apple TV”的场景；
+> 修复全局冷却吞掉换源、旧切源任务与延迟待机互相干扰的问题。
+> 本轮 review、回归结果与实机验收边界见 [`docs/OPERATIONS.md`](docs/OPERATIONS.md#9-2026-10-23-review-与交接)。
+
 ## 问题
 
 这台电视的 HDMI-CEC 是“半残”状态：CEC 硬件和 Android CEC 栈正常，但小米修改了
@@ -55,27 +59,29 @@ Apple TV / PS5 ──HDMI-CEC──> 小米电视
    - 该机型不给第三方 App 发 `BOOT_COMPLETED`，所以不能只靠广播。
 
 2. **唤醒 + 切输入**
-   - 息屏时每 2 秒读 CEC history，**只匹配显式唤醒消息**：`<Image View On>`、
+   - 亮屏和息屏时均约每 2 秒读 CEC history，**只匹配收到的显式请求**：`<Image View On>`、
      `<Text View On>`、`<Active Source>`（src ≠ 0）。不使用 `Report Power Status 00`
      做唤醒触发，避免把 60 秒轮询回复或待机误报当成开机。
-   - 先通过 `service call power 9 ...` 唤醒（root 域读不到 `/proc/uptime`，用
+   - 仅在息屏时先通过 `service call power 9 ...` 唤醒（root 域读不到 `/proc/uptime`，用
      `mLastSleepTime` 作 eventTime）。
-   - 等 `mWakefulness=Awake`，sleep 2 秒让 tvhome 落定，再通过 `TvService` transaction 3000
-     拉起 `ExternalSourceActivity --ei input 23`。
-   - **同时校验** `mActiveRoutingPath` 和 `mResumedActivity`：Apple TV 的 `<Active Source>`
-     可能先把 path 置成 `0x1000`，但前台还是 tvhome；只看 path 会误判“已切好”。
-   - 失败时最多重试 5 次。
+   - 唤醒后等 `mWakefulness=Awake`，sleep 2 秒让 tvhome 落定；电视原本亮屏时直接切输入。
+   - 每个新请求至少通过 `TvService` transaction 3000 执行一次真实输入选择，再检查
+     `mActiveRoutingPath` 和 `mResumedActivity`。CEC 可能先改 path，且 PS5 与 Apple TV
+     共用同一个输入 Activity，因此不能凭这两个值提前跳过切源。
+   - 最多尝试 5 次；同设备正在处理的消息合并，新设备请求取消旧任务。没有全局 20 秒冷却。
+   - 启动和 CEC 历史游标丢失时重新建立基线，不重放旧消息；不按设备品牌写特殊规则。
 
 3. **关机联动**
-   - 检测到 Awake → Asleep 后 3 秒，向 CEC 总线上所有非 0 logical address 发
+   - 检测到 Awake → Asleep 至少 3 秒后，在后续轮询中向已发现的 logical address 1–14 发
      `<Standby>`。地址按两位十六进制通用解析（`0x0B` 与 `0x0b` 等价），输入按
      `port_id` 映射（1→HDMI1/23、2→HDMI2/24、3→HDMI3/25、4→HDMI4/26），
      Apple TV、PS5、Switch 走同一套规则，没有逐设备硬编码。
+     每次发送前复查电视仍在息屏；重新亮屏或收到显式切源请求时取消待机计划。
    - **唤醒只认显式 CEC 消息**：`<Image View On>`、`<Text View On>`、`<Active Source>`。
      不再用 `<Report Power Status params: 00>` 触发唤醒——它既可能是 60 秒轮询的回复，
      也可能是待机设备的误报，PS5 和 Switch 都曾因此把电视反复叫醒。
-   - 因此不需要 `src=4` 之类的设备特例；任何新设备接入，只要 CEC logical address 在
-     0x01–0x0F 且 `port_id` 在 1–4，就会自动获得正确的唤醒、切源和 Standby 行为。
+   - 因此不需要 `src=4` 之类的设备特例；新设备须已被电视发现，CEC logical address 在
+     0x01–0x0E 且 `port_id` 在 1–4。`0x0F` 是广播/未注册地址，不作为独立设备控制。
    - 设备是否真正跟随电视睡眠仍取决于设备自身 CEC 设置；例如 PS5 需要开启
      `Settings > System > HDMI > Enable Power Off Link`。
 
@@ -102,6 +108,7 @@ Apple TV / PS5 ──HDMI-CEC──> 小米电视
 │   ├── install.sh           # adb 一键推送 + 安装 APK
 │   ├── apk/                 # 辅助 APK 源码（smali + manifest）与预编译 APK
 │   └── tools/t4004.sh       # 手动启用 ADB 的小工具
+├── tests/test_bridge.py     # 隔离 CEC 报文与状态机回归测试
 └── legacy/
     └── coreelec/            # 已归档的外接盒子方案（Python + systemd）
 ```
@@ -127,6 +134,9 @@ cd cec-bridge/tv-side
 3. 推送 `cec-bridge.sh`、`launch.sh`、`restart.sh`、`stop.sh`
 4. 安装 `apk/cecbridge.apk` 并启动一次 `MainActivity`（触发 root 启动 + 注册 JobScheduler）
 
+所有 ADB 操作绑定指定电视；脚本先上传为 `.new`、检查语法后替换。
+已有守护进程需要按运维文档重启才能加载新版；`disabled` 标记存在时安装不会自动恢复运行。
+
 可选：启用 ADB 自愈：
 
 ```sh
@@ -142,17 +152,24 @@ adb shell dumpsys activity activities | grep -m1 mResumedActivity
 adb shell 'tail -f /storage/emulated/0/cec-bridge/daemon.log'
 ```
 
-一次成功的真实唤醒日志应类似：
+新版处理 Apple TV 亮屏切源的日志应类似（示例，不是实机验收记录）：
 
 ```text
-02:23:32 [26610] wake trigger: src logical=8 input=23
-02:23:33 [26610] TV awake
-02:23:35 [26610] wake: path ok but foreground not ExternalSourceActivity, forcing input src=8
-02:23:38 [26610] wake preselect ok src=8 path=0x1000
+CEC request src=8 state=Awake
+activate trigger: src logical=8 input=23 state=Awake
+input ok src=8 path=0x1000
 ```
 
 同时 `mResumedActivity` / `mCurrentFocus` 应为
 `com.xiaomi.mitv.tvplayer/.ExternalSourceActivity`，`mActiveRoutingPath=0x1000`。
+最终仍需看实际画面确认目标 HDMI 输入，Activity 名称本身不包含当前 HDMI 口。
+
+本地回归测试（Python 标准库，不连接电视）：
+
+```sh
+python3 -m unittest discover -s tests -v
+BRIDGE_TEST_SHELL='busybox ash' python3 -m unittest discover -s tests -v
+```
 
 ## 安全与限制
 

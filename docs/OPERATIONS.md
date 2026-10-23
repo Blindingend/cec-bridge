@@ -1,6 +1,6 @@
 # TV 端 CEC 桥接：部署与运维记录
 
-日期：2026-10-18  
+初次记录：2026-10-18；代码 review 更新：2026-10-23
 适用：小米电视 6 至尊版（L65M7-Z1 / walle，Android 9）
 
 ## 0. 现状
@@ -8,6 +8,9 @@
 小米电视 CEC 缺陷的根因已定位；纯软件、全部运行在电视本地的桥接方案已部署，并完成
 真实 Apple TV 遥控端到端验证。核心链路（休眠中收 CEC → 唤醒 → 强制切输入；
 进入休眠 → 给外设发 Standby；重启自愈）均已验证，设备上的测试脚本已清理。
+
+上段及第 5 节描述 10 月 18 日的历史验收。10 月 23 日新增亮屏切源及状态机修复，
+验证范围和待做的真实遥控验收见第 9 节；不要把历史验收当作新版已经通过实机测试。
 
 ## 1. 设备与环境
 
@@ -61,20 +64,20 @@ reason 6（KEYCODE_SLEEP）行为正常，可作对照。详细证据见 `FINDIN
   源码：`tv-side/cec-bridge.sh`。
 - 运行时 PID 以 `daemon.pid` 为准；心跳文件 `heartbeat` 每 2 s 刷新；
   `lock` 目录防重复实例。
-- 休眠中每 2 s 读 `dumpsys hdmi_control` 的 CEC history，只匹配显式唤醒消息：
-  `<Image View On>`、`<Text View On>`、`<Active Source>`（src ≠ 0）。20 s 冷却。
+- 亮屏和休眠中均约每 2 s 读 `dumpsys hdmi_control` 的 CEC history，只匹配收到的显式请求：
+  `<Image View On>`、`<Text View On>`、`<Active Source>`（src 1–14）。没有全局冷却；
+  同设备尚在执行的请求合并，换设备取消旧任务，同一批消息取最新请求。
 - **不使用 `<Report Power Status params: 00>` 触发唤醒**：它可能是 60 s 轮询的正常回复，
   也可能是待机设备的误报（PS5/Switch 都出现过），用它做触发会导致电视刚睡就被叫醒。
   任何设备真正唤醒时都应发送显式的 `<Image View On>` / `<Text View On>` / `<Active Source>`。
 - logical address 统一按两位十六进制解析（`0x0B` 与 `0x0b` 等价）；
   输入只通过 TV 自己的 `port_id` 映射（1→23、2→24、3→25、4→26）。
   查不到设备或端口时**不猜默认值**，记录日志并放弃切源，避免把 Switch 误切到 Apple TV。
-- 唤醒顺序（重要）：**先 wakeUp，等 Awake，sleep 2 s 让主页落定，再启动输入 Activity，
-  最后同时校验 `mActiveRoutingPath` 和 `mResumedActivity`**。反序会被唤醒后的 tvhome 覆盖。
-- ⚠️ 只校验 `mActiveRoutingPath` 不够：Apple TV 的 `<Active Source>` 会先把 path 置成
-  `0x1000`，但前台可能仍是 `com.mitv.tvhome`（2026-10-18 02:13 实测踩坑）。此时必须继续
-  执行切输入，不能因 path 已对直接返回；脚本最多重试 5 次，只有 path 与前台 Activity
-  同时满足才记录 `wake preselect ok`。
+- 息屏时顺序：**先 wakeUp，等 Awake，sleep 2 s 让主页落定，再启动输入 Activity，
+  最后同时校验 `mActiveRoutingPath` 和 `mResumedActivity`**。本来亮屏时直接切输入。
+- 每个新请求至少执行一次真实输入选择，不能因 path 和前台 Activity 已匹配就提前返回：
+  CEC 可以先更新 path，而显示 PS5 与 Apple TV 的 Activity 名称完全相同。
+  最多尝试 5 次；调用后两项系统状态都匹配才记录 `input ok`，实际画面仍需确认。
 - 唤醒：
   `service call power 9 i64 <mLastSleepTime+1> s16 'android.policy:POWER' s16 android`
   （root 域读不到 `/proc/uptime`，用 dumpsys 的 mLastSleepTime 代替；mLastWakeTime 也可）。
@@ -82,8 +85,9 @@ reason 6（KEYCODE_SLEEP）行为正常，可作对照。详细证据见 `FINDIN
   "-a com.xiaomi.mitv.tvplayer.EXTSRC_PLAY -n com.xiaomi.mitv.tvplayer/com.xiaomi.mitv.tvplayer.ExternalSourceActivity --ei input 23"`
   。返回 `Not a data message` 是回包解析噪音，命令实际生效。
   input 23/24/25/26 ↔ routing path `0x1000/0x2000/0x3000/0x4000`。
-- 进入休眠 3 s 后，对 CEC 总线上所有非 0 logical address 发
-  `service call hdmi_control 30 i32 0 i32 <logical>`（`<Standby>`）。
+- 进入休眠至少 3 s 后，对已发现的 logical address 1–14 发
+  `service call hdmi_control 30 i32 0 i32 <logical>`（`<Standby>`）。主循环在下一次轮询执行，
+  发送前复查状态；电视已醒或收到切源请求时取消待机。跳过电视和广播地址。
 
 ## 4. root 域（u:r:misysdiagnose:s0, uid 0）能力边界
 
@@ -166,3 +170,117 @@ adb shell input keyevent 3           # 回主页
 
 > 本文档是部署与运维记录；TvService 事务号、Activity 名称等均可能随固件版本变化，
 > 升级电视系统后需要重新核对。
+
+## 9. 2026-10-23 review 与交接
+
+### 工作区与证据来源
+
+- 当前维护目录为 `/home/yx/cec-bridge`。本轮从 GitHub 获取 `main`，基线为 `07618a7`。
+  远端历史已重写，旧目录不能直接 fast-forward；旧提交已保留到本地分支
+  `archive/pre-sync-2026-10-23`，再将 main 对齐最新版本。修复作为工作区改动保留。
+- Claude 的相关会话为 `b4309177-689b-42cf-9403-ba3bd686992f` 和
+  `e840e127-ed53-445c-b4c5-617132366932`；dsh 后续会话为
+  `session-1cfe5ff8-c58f-422a-bdd7-c07580d7d51e`。
+- 旧研究工作区 `/home/yx/mitv-inspect` 中的 `HANDOFF-cec.md`、`FINDINGS-cec.md`
+  和 `.gh-cec-bridge` 保存了 10 月 18 日过程与发布快照。Claude memory 中的
+  “外接盒子待定”“先切输入再唤醒”等描述已过时，以当前代码及本仓库文档为准。
+- 用户已明确要求：纯软件、全部在电视上运行、无需另一台常开电脑；按 CEC 地址和端口
+  通用处理，不能为每个设备追加品牌特例。
+
+### 用户报告与现场核对
+
+用户报告 10 月 22 日“关掉 PS5 后打开 Apple TV，没有自动切过去”。10 月 23 日约 14:59
+只读查看电视：守护进程仍是旧版，MD5 为 `b202682ae4dd4687c35f780148bbb2db`。
+电视 Asleep，PS5 与 Apple TV 均回报 standby；这说明该次快照中 PS5 已待机，不能证明
+它是被桥接的 Standby 触发，不能据此宣称 PS5 跟随待机问题完全验收。
+
+10 月 22 日日志有 20:17:28 PS5 唤醒和 23:24:19 电视息屏记录，没有亮屏期间的切源处理。
+原始 CEC history 已被后续轮询覆盖，无法重建昨天 Apple TV 的完整消息序列。
+不过代码中 Awake 分支直接丢弃新增消息是确定缺陷，能够解释该场景。
+
+### Review 发现及处理
+
+| 优先级 | 问题 | 本轮处理 |
+|---|---|---|
+| 高 | Awake 时跳过 CEC 消息，电视亮着时换设备不切输入 | 两种电源状态共用事件处理；Awake 仅切源，Asleep 才唤醒 |
+| 高 | path + 前台 Activity 匹配仍可能显示旧 HDMI，提前返回造成漏切 | 每个新请求至少执行一次输入选择，再检查两项系统状态 |
+| 高 | 全局 20 s 冷却吞掉新设备请求；并行切源可能互相覆盖 | 移除全局冷却，合并同设备进行中的请求，新请求取消旧任务 |
+| 高 | 延迟待机子进程不复查状态，可能关掉刚启动的外设 | 主循环维护待机截止时间，亮屏/切源请求取消，逐条发送前复查 |
+| 中 | CEC history 游标丢失时重放尾部 5 行，可能重放旧唤醒 | 启动和游标丢失时重新建立基线，不回放未知时间范围的事件 |
+| 中 | 电源查询失败被当成 Awake；设备发现稍慢就放弃 | 未知电源状态不控制；端口发现最多查询 3 次，仍不猜默认输入 |
+| 中 | stop 后 APK 看门狗马上重新拉起；退出未清理子任务 | disabled 标记阻止启动；正常退出清理工作进程、PID 与锁 |
+| 中 | install 未指定 ADB serial，原地覆盖运行中的 shell 文件 | 所有命令使用 -s；先上传 .new、语法检查，再 rename |
+| 低 | daemon.log 只在进程启动时轮转 | 运行期间也定期检查 1 MiB 阈值并轮转一次 |
+
+保留的限制：
+
+- 依然是轮询而非 CEC 事件订阅。极快的息屏/唤醒发生在同一轮询间隔内可能无法区分；
+  刚观察到息屏时丢弃上一轮的消息，以避免把息屏前的请求重新当成唤醒。
+- 历史游标丢失时优先避免误动作，这一轮的新请求也可能被跳过，需要设备再次发显式请求。
+- 切源后的路由与 Activity 检查是系统状态证据，并不是画面识别；真实画面要用遥控验收。
+- root 仍受 misysdiagnose SELinux 域限制；本轮未修改 APK、厂商固件或权限策略。
+  只有这台 Android 9 机型有历史实测依据，不扩展兼容性承诺。
+
+### 本地验证与实机验收
+
+`tests/test_bridge.py` 用临时目录、模拟 dumpsys/service 测试真实 shell 函数；不连接电视。
+覆盖亮屏 PS5 → Apple TV、息屏唤醒、输入 Activity 误判、快速换设备、Switch 大写地址、
+换口、发现延迟、待机取消、未知电源状态、历史重放、进程清理与安装目标选择。
+
+```sh
+python3 -m unittest discover -s tests -v
+BRIDGE_TEST_SHELL='busybox ash' python3 -m unittest discover -s tests -v
+```
+
+本轮 **30 项测试在主机 `/bin/sh` 与 BusyBox ash 下均通过**。另在电视原生 shell 中完成：
+
+- `sh -n` 语法检查；
+- 只读解析真实电源状态和 Apple TV / PS5 的端口映射；
+- 模拟报文验证全部 logical address 1–14、亮屏 PS5 → Apple TV 请求及游标去重；
+- 用仅打印输出的工作函数验证旧任务取消和 EXIT trap 不影响主进程。
+
+原生检查发现 Android toybox sed 不支持 GNU BRE 的 `\|` 分支写法，解析已改用 awk，
+并显式按数字比较地址，以上检查均已通过。测试中的控制函数全部被模拟，未执行真实
+唤醒、切源或外设待机指令。
+**新版已于 2026-10-23 15:24 部署；真实 PS5 → Apple TV 遥控场景仍待验收**。
+部署只替换四个 shell 脚本并重启桥接，未重装 APK、未重启电视。
+原脚本备份在电视的 `/storage/emulated/0/cec-bridge/backup-20261023-152409/`。
+15:25 复核：新守护进程 PID 10679、心跳持续更新，电视始终 Asleep，没有重放历史唤醒。
+四个安装文件均与工作区哈希一致；`cec-bridge.sh` 的 MD5 为
+`4def643b8c8aa8bc232a096d0fa1e411`。
+
+额外通过厂商诊断入口在实际 `uid=0 / u:r:misysdiagnose:s0` 环境核对：电源状态、
+Apple TV/PS5 端口映射、历史初始化及模拟亮屏切源请求均正常；控制函数替换为打印，
+没有主动唤醒、切输入或令外设待机。验证脚本和输出已从电视清理，备份保留。
+部署后的验收顺序：
+
+1. 电视亮屏显示 PS5，关闭 PS5，再用 Apple TV 遥控器打开 Apple TV；确认切到 Apple TV。
+2. 20 秒内切换到另一台设备，确认没有被全局冷却或旧任务覆盖。
+3. 电视息屏后分别用 Apple TV、PS5、Switch 唤醒，检查画面和输入端口。
+4. 电视息屏后立即重新唤醒，确认旧待机任务不会把新设备关掉。
+5. 静置超过 60 秒，确认电源状态轮询不会唤醒电视。
+
+### 更新、停用与恢复
+
+先备份设备上的四个 shell 脚本；`install.sh` 会推送新版，但已在运行的守护进程不会因
+上传自动更换。APK 没变时也可以只逐个上传 `.new` 文件，`sh -n` 后 `mv` 替换。
+保持 `keep-adb`、日志和现有 APK 数据不变。
+
+以下命令使用现有厂商诊断入口在 root 域执行管理脚本。先设置真实电视地址；
+运行前确认它处于可中断桥接服务的时段。只重启桥接，不重启电视。
+
+```sh
+TV_SERIAL='<TV_IP>:5555'
+# 停用并阻止 persisted jobs 自动拉起：
+adb -s "$TV_SERIAL" shell service call TvService 4400 s16 s s16 /storage/emulated/0/cec-bridge/stop.sh
+# 恢复或重启，清除 disabled 标记后启动：
+adb -s "$TV_SERIAL" shell service call TvService 4400 s16 s s16 /storage/emulated/0/cec-bridge/restart.sh
+```
+
+`restart.sh` 最多等旧进程 15 秒；若未退出则保留 disabled，停止继续启动，便于排查。
+新 daemon 收到 TERM 会取消自己的切源工作进程并清理锁；旧版本不具备该退出清理，
+首次升级应在没有进行唤醒/切源时执行。恢复旧版时同样先停桥接、还原备份，再启动。
+
+确认日志有 `daemon start (awake source switching enabled)`、心跳持续更新且只运行一个
+守护进程。亮屏切源应记录 `CEC request ... state=Awake`、`activate trigger ... input=...`
+及 `input ok`；这些替代旧版的 `wake preselect ok`。
