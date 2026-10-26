@@ -46,7 +46,7 @@ reason 8 息屏时，Android 的 CEC 栈仍在运行：仍能收发 CEC、仍每
 4. 再切输入：`service call TvService 3000 ... ExternalSourceActivity --ei input 23`。
 5. **不能在调用前凭 path + Activity 跳过输入选择**。Apple TV 的 `<Active Source>` 会先把
    path 置成 `0x1000`，前台可能仍是主页，也可能是正在显示 PS5 的同一个
-   `ExternalSourceActivity`。每个新请求至少执行一次实际切输入；最多尝试 5 次，调用后
+   `ExternalSourceActivity`。除已亮屏且 TIF 主会话与前台均确认目标输入的重复请求外，至少执行一次实际切输入；最多尝试 5 次，调用后
    用 `mActiveRoutingPath` 和 `mResumedActivity` 检查系统状态，最终画面仍需实机确认。
 
 2026-10-23 review 确认旧循环仅在 Asleep 分支处理事件，Awake 分支直接推进游标。
@@ -107,8 +107,9 @@ CEC 侧无法区分息屏与开机（息屏时 `mPowerStatus=0`，且仍每分�
 
 - 桥接运行在电视本机：root 守护进程读取 `dumpsys`，通过 TvService / PowerManager 原语操作，
   不需要外接常开机器。
-- 切输入每次新请求必须先执行选择命令，再校验 routing path 和前台 Activity；这两个值
-  不能用作调用前的短路条件，因为不同 HDMI 输入共用同一 Activity。
+- routing path 与前台 Activity 不能单独作为跳过切源的条件，因为不同 HDMI 输入共用同一 Activity。
+  2026-10-26 增加只读 TIF 主会话关联：已亮屏、实际主会话为目标物理 HDMI 且播放器在前台时
+  跳过同源重选；其余情况继续执行选择命令。详见 OPERATIONS 的同源重报修复记录。
 - **唤醒只认显式 CEC 消息**：`<Image View On>`、`<Text View On>`、`<Active Source>`。
   不用 `<Report Power Status params: 00>` 做唤醒触发；它可能是 60 s 轮询回复或待机误报，
   PS5 和 Switch 都曾因此把电视反复叫醒。

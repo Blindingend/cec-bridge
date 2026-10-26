@@ -68,6 +68,58 @@ resumed_is_external() {
     | grep -q 'com.xiaomi.mitv.tvplayer/.ExternalSourceActivity'
 }
 
+playback_input() {
+  # CEC routing metadata and a shared Activity name do not identify the displayed
+  # HDMI port. Match only the current user's main TIF token to its physical input.
+  # Walle awk rejects unary ! (illegal arithmetic operator 345); use == 0.
+  local dump
+  dump=$("$DUMPSYS" -t 2 tv_input 2>/dev/null) || return 1
+  printf '%s\n' "$dump" | awk '
+    /^User Ids .*Current user:/ {
+      value=$0; sub(/^.*Current user:[[:space:]]*/, "", value); sub(/[^0-9].*$/, "", value)
+      if (value ~ /^[0-9]+$/) { current=value; have_current=1 }
+      next
+    }
+    /^UserState [(][0-9]+[)]:/ {
+      value=$0; sub(/^UserState [(]/, "", value); sub(/[)].*$/, "", value)
+      selected=have_current && value==current; in_sessions=0; session=""
+      if (selected) have_user=1
+      next
+    }
+    selected && /^[^[:space:]]/ { selected=0; in_sessions=0; session="" }
+    selected == 0 { next }
+    /^  mainSessionToken:/ { main=$2; main_count++; in_sessions=0; next }
+    /^  sessionStateMap:/ { in_sessions=1; have_sessions=1; session=""; next }
+    /^  [^[:space:]]/ { in_sessions=0; session=""; next }
+    in_sessions == 0 { next }
+    /^    [^[:space:]]/ {
+      session=""
+      if ($1 ~ /^android[.]os[.]Binder(Proxy)?@[0-9a-fA-F]+:$/) {
+        session=$1; sub(/:$/, "", session)
+        if (seen[session]++) bad=1
+      }
+      next
+    }
+    $1 == "inputId:" && session != "" {
+      if (NF != 2 || input_count[session]++) bad=1
+      inputs[session]=$2
+    }
+    END {
+      if (bad || have_user == 0 || have_sessions == 0 || main_count != 1 || main == "null") exit 1
+      input=inputs[main]
+      if (input !~ /^com[.]mediatek[.]tvinput\/[.]hdmi[.]HDMIInputService\/HW[4-7]$/) exit 1
+      sub(/^.*\/HW/, "", input)
+      print input + 19
+    }'
+}
+
+already_showing_input() {
+  local current_input
+  current_input=$(playback_input) || return 1
+  [ "$current_input" = "$1" ] || return 1
+  resumed_is_external && [ "$(power_state)" = Awake ]
+}
+
 activate_source() {
   local src="$1" initial_state="$2" input want path n t state fg
   # Discovery can lag behind Image/Text View On; retry briefly without guessing.
@@ -105,11 +157,16 @@ activate_source() {
     sleep 2
   fi
 
-  # Always issue one real input selection for a fresh CEC request. Active Source
-  # can update the routing path while ExternalSourceActivity still displays the
-  # previous HDMI input, so even path + foreground cannot justify skipping it.
-  # Afterwards both are useful checks that the selection command took effect.
+  # Reannouncing an already displayed source (for example during a game mode
+  # change) must not restart the TV input Activity. Only real TIF playback plus
+  # the foreground Activity can justify this skip, never the CEC path alone.
   [ "$(power_state)" = Awake ] || { log "activate cancelled: TV no longer awake src=$src"; return; }
+  if [ "$initial_state" = Awake ] && already_showing_input "$input"; then
+    log "input already active src=$src input=$input; skip reselect (TIF main + foreground)"
+    return
+  fi
+  # Wake flows and uncertain/other playback still get a real selection. This
+  # preserves switching when CEC updated its path but the old HDMI is displayed.
   n=0
   while [ "$n" -lt 5 ]; do
     [ "$(power_state)" = Awake ] || { log "activate cancelled: TV no longer awake src=$src"; return; }

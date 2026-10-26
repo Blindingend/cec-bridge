@@ -19,6 +19,21 @@ CEC message history:
 """
 
 
+def tv_input(port=2, token="android.os.Binder@715b3a5", user=0):
+    # Shape verified in the walle active dump: token + SessionState on one line.
+    sessions = "" if port is None else (
+        f"    {token}: com.android.server.tv.TvInputManagerService$SessionState@b1d77d2\n"
+        f"      inputId: com.mediatek.tvinput/.hdmi.HDMIInputService/HW{port + 3}\n"
+        f"      sessionToken: {token}\n"
+    )
+    return (f"User Ids (Current user: {user}):\n  {user}\nUserState ({user}):\n"
+            "  inputMap: inputId -> TvInputState\n"
+            "    com.mediatek.tvinput/.hdmi.HDMIInputService/HW5: state: 0\n"
+            "  sessionStateMap: ITvInputSession -> SessionState\n" + sessions
+            + f"  mainSessionToken: {token if port is not None else 'null'}\n"
+            + "TvInputHardwareManager Info:\n")
+
+
 def event(second, name="Active Source", src=8, direction="R"):
     return f"    [{direction}] time=2026-10-23 10:00:{second:02d} message=<{name}> src: {src}, dst: 15, params: 10 00\n"
 
@@ -29,9 +44,10 @@ class BridgeTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.put("hdmi", HDMI)
+        self.put("tv_input", tv_input())
         self.put("power", "  mWakefulness=Awake\n  mLastSleepTime=100\n")
         self.put("activity", "mResumedActivity: com.xiaomi.mitv.tvplayer/.ExternalSourceActivity\n")
-        self.put("dumpsys", '#!/bin/sh\ncase $1 in\npower) cat "$CASE_DIR/power" ;;\nhdmi_control) cat "$CASE_DIR/hdmi" ;;\nactivity) cat "$CASE_DIR/activity" ;;\nesac\n')
+        self.put("dumpsys", '#!/bin/sh\nif [ "$1" = -t ]; then shift 2; fi\ncase $1 in\npower) cat "$CASE_DIR/power" ;;\nhdmi_control) cat "$CASE_DIR/hdmi" ;;\nactivity) cat "$CASE_DIR/activity" ;;\ntv_input) cat "$CASE_DIR/tv_input" ;;\nesac\n')
         self.put("service", r"""#!/usr/bin/env python3
 import os, pathlib, re, sys
 b = pathlib.Path(os.environ['CASE_DIR'])
@@ -46,6 +62,12 @@ if a[:3] == ['call', 'TvService', '3000']:
     p = b / 'hdmi'
     p.write_text(re.sub(r'mActiveRoutingPath: 0x[0-9a-f]+', f'mActiveRoutingPath: 0x{port}000', p.read_text()))
     (b / 'activity').write_text('mResumedActivity: com.xiaomi.mitv.tvplayer/.ExternalSourceActivity\n')
+    (b / 'tv_input').write_text(
+        'User Ids (Current user: 0):\n  0\nUserState (0):\n'
+        '  sessionStateMap: ITvInputSession -> SessionState\n'
+        '    android.os.Binder@abcd: com.android.server.tv.TvInputManagerService$SessionState@1234\n'
+        f'      inputId: com.mediatek.tvinput/.hdmi.HDMIInputService/HW{port + 3}\n'
+        '  mainSessionToken: android.os.Binder@abcd\n')
 """)
         (self.base / "dumpsys").chmod(0o755)
         (self.base / "service").chmod(0o755)
@@ -111,6 +133,97 @@ sleep() {{ :; }}
         self.assertEqual(self.calls().count("call TvService"), 1)
         self.assertIn("--ei input 23", self.calls())
         self.assertNotIn("call power", self.calls())
+
+    def test_repeated_ps5_requests_after_worker_finishes_do_not_reselect(self):
+        self.run_bridge('bridge_tick\n' + self.append(event(1, src=4))
+                        + 'bridge_tick; wait "$ACTION_PID"\n' + self.append(event(10, src=4))
+                        + 'bridge_tick; wait "$ACTION_PID"\n')
+        self.assertEqual(self.calls(), "")
+        self.assertEqual(self.log().count("skip reselect (TIF main + foreground)"), 2)
+
+    def test_wake_selects_once_then_same_source_reannouncement_is_ignored(self):
+        self.put("power", "mWakefulness=Asleep\nmLastSleepTime=100\n")
+        self.run_bridge('bridge_tick\n' + self.append(event(1, src=4))
+                        + 'bridge_tick; wait "$ACTION_PID"\n' + self.append(event(10, src=4))
+                        + 'bridge_tick; wait "$ACTION_PID"\n')
+        self.assertEqual(self.calls().count("call TvService"), 1)
+        self.assertIn("call power", self.calls())
+        self.assertIn("skip reselect", self.log())
+
+    def test_same_tif_input_but_home_in_foreground_still_selects(self):
+        self.put("activity", "mResumedActivity: io.github.blindingend.mitvhub.launcher/.MainActivity\n")
+        self.run_bridge('activate_source 4 Awake')
+        self.assertIn("--ei input 24", self.calls())
+        self.assertNotIn("skip reselect", self.log())
+
+    def test_cec_route_and_foreground_match_but_different_tif_never_skip(self):
+        self.put("tv_input", tv_input(port=1))
+        self.run_bridge('activate_source 4 Awake')
+        self.assertIn("--ei input 24", self.calls())
+        self.assertNotIn("skip reselect", self.log())
+
+    def test_missing_or_untrusted_tif_falls_back_to_selecting(self):
+        cases = ["Permission Denial: cannot dump tv_input\n", tv_input(port=None),
+                 tv_input().replace("mainSessionToken: android.os.Binder@715b3a5",
+                                    "mainSessionToken: android.os.Binder@ffff"),
+                 tv_input().replace("/HW5", "/HDMI200004"),
+                 tv_input().replace("  mainSessionToken:", "  missingMainToken:")]
+        for data in cases:
+            with self.subTest(data=data.splitlines()[-1]):
+                self.put("tv_input", data)
+                self.put("calls", "")
+                self.run_bridge('activate_source 4 Awake')
+                self.assertEqual(self.calls().count("call TvService"), 1)
+
+    def test_tif_read_failure_falls_back_to_real_select(self):
+        (self.base / "tv_input").unlink()
+        self.run_bridge('activate_source 4 Awake')
+        self.assertIn("--ei input 24", self.calls())
+        self.assertNotIn("skip reselect", self.log())
+
+    def test_sleep_during_tif_check_does_not_select(self):
+        self.run_bridge('''
+playback_input() { printf 'mWakefulness=Asleep\\n' > "$BASE/power"; echo 24; }
+activate_source 4 Awake
+''')
+        self.assertEqual(self.calls(), "")
+        self.assertIn("activate cancelled", self.log())
+
+    def test_tif_main_token_not_first_session_or_connected_input(self):
+        data = tv_input(port=1)
+        data = data.replace("  mainSessionToken:",
+                            "    android.os.Binder@bbbb: com.android.server.tv.TvInputManagerService$SessionState@9999\n"
+                            "      inputId: com.mediatek.tvinput/.hdmi.HDMIInputService/HW5\n"
+                            "  mainSessionToken:")
+        self.put("tv_input", data)
+        self.assertEqual(self.run_bridge('playback_input'), "23")
+        self.run_bridge('activate_source 4 Awake')
+        self.assertIn("--ei input 24", self.calls())
+
+    def test_tif_proxy_tokens_ports_and_current_user(self):
+        for port in range(1, 5):
+            self.put("tv_input", tv_input(port, "android.os.BinderProxy@abcd"))
+            self.assertEqual(self.run_bridge('playback_input'), str(port + 22))
+        other_user = "UserState (10):" + tv_input(1, user=10).split("UserState (10):", 1)[1]
+        data = tv_input(2).replace("TvInputHardwareManager Info:\n", "") + other_user
+        self.put("tv_input", data)
+        self.assertEqual(self.run_bridge('playback_input'), "24")
+
+    def test_tif_duplicate_token_is_not_trusted(self):
+        data = tv_input().replace("  mainSessionToken:",
+                                 "    android.os.Binder@715b3a5: com.android.server.tv.TvInputManagerService$SessionState@ffff\n"
+                                 "      inputId: com.mediatek.tvinput/.hdmi.HDMIInputService/HW4\n"
+                                 "  mainSessionToken:")
+        self.put("tv_input", data)
+        self.run_bridge('activate_source 4 Awake')
+        self.assertIn("--ei input 24", self.calls())
+        self.assertNotIn("skip reselect", self.log())
+
+    def test_routing_messages_do_not_trigger_selection(self):
+        self.run_bridge('bridge_tick\n' + self.append(event(1, "Routing Change", 4)
+                        + event(2, "Routing Information", 4) + event(3, "Report Power Status", 4))
+                        + 'bridge_tick\n')
+        self.assertEqual(self.calls(), "")
 
     def test_switch_uppercase_hex_address_and_dynamic_ports(self):
         self.put("hdmi", HDMI.replace("physical_address: 0x3000 port_id: 3", "physical_address: 0x4000 port_id: 4"))

@@ -284,3 +284,99 @@ adb -s "$TV_SERIAL" shell service call TvService 4400 s16 s s16 /storage/emulate
 确认日志有 `daemon start (awake source switching enabled)`、心跳持续更新且只运行一个
 守护进程。亮屏切源应记录 `CEC request ... state=Awake`、`activate trigger ... input=...`
 及 `input ok`；这些替代旧版的 `wake preselect ok`。
+
+
+## 10. 2026-10-26 同源重报与 PS5 进出游戏短黑
+
+用户报告 PS5 进入或退出游戏时短暂黑屏，游戏持续运行时正常。主代理本轮只读检查实机
+`daemon.log`，发现同一 PS5（logical 4 / input 24）多次触发选择：10-25 10:14:26 为
+Asleep 首开，10:14:35 已 Awake 又选择，另有 10:23:01、10:30:52、10:31:27；10-24
+也有 23:16:06、23:16:41、23:21:28。当前没有这些时刻对应的完整 CEC/播放器/信号日志，
+因此它们证明存在同源重复选择，不能单独证明每次黑屏均由桥接造成。
+
+`1cf613f` 只在同源 worker 仍运行时合并消息；worker 完成后，下一条接收的
+Image View On、Text View On 或 Active Source 都会再次执行 `TvService 3000 / EXTSRC_PLAY`。
+同源重复 Active Source 的假设备复现，在原本已显示 PS5 时产生两次 input 24 选择。
+HDMI signal loss/locked 本身不被脚本读取；Routing Change/Information 也不在触发集合。
+
+缓存原厂 `ExternalSourceActivity` 的反编译结果提供了具体的播放器检查方向：`onNewIntent`
+只保存新 Intent；后续 `onResume → initPlayerEnvironment` 会调用 `createPlayerAndSurface`
+和 `handleIntent`，后者直接执行 `SourceManager.setCurrentSource(input)`，该方法自身没有
+同源短路。`onPause` 则调用 `abolishPlayerEnvironment`。这说明要检查的不是只有
+onNewIntent，还包括完整 pause/resume 与 source setter 时间线；下层 SourceManager 是否
+同源去重、当次 Intent 是否确实引发画面重建，仍需运行日志佐证。
+
+### 本轮修复
+
+新增只读 `playback_input()`，通过 `dumpsys -t 2 tv_input` 解析**当前用户**的
+`mainSessionToken → sessionStateMap → inputId`，仅接受物理 HW4..HW7（HDMI1..4）。
+支持真实 key 行后的 SessionState 描述与 Binder/BinderProxy token，不使用 inputMap
+“已连接”、CEC routing path 或第一个任意 session 推断实际画面。
+
+仅当请求开始时电视已经 Awake、TIF 确认目标 input、播放器仍为前台且电视仍 Awake，
+才记录下面的日志并跳过重选：
+
+```text
+input already active src=4 input=24; skip reselect (TIF main + foreground)
+```
+
+息屏唤醒仍执行一次真实输入选择。TIF 缺失/读失败/主 token 不可关联/指向其他输入、
+或前台不为播放器，都保留原选择路径；不恢复全局冷却，也不按设备品牌写规则。
+因此“CEC path 已变成 Apple TV，但 TIF 仍是 PS5”的旧故障仍会执行 input 23 选择。
+第 9 节的“每个新请求至少选择一次”是 10 月 23 日策略，本节增加了更强的实际播放证据例外。
+
+### 证据与后续验收
+
+初次实现交付时只改源码和测试，尚未部署；后续实机兼容性结果见下段。假设备回归覆盖同源 worker 完成后的重复消息、
+唤醒后再次重报、HOME 前台修复、path/Activity 相符但 TIF 不同、多会话/多用户、缺失与
+重复 token、非物理 CEC child input、TIF 读失败，以及查询期间电视睡眠。
+
+本地验证结果：`python3 -B -m unittest discover -s tests -v` 与
+`BRIDGE_TEST_SHELL='busybox ash' python3 -B -m unittest discover -s tests -v` 均为
+41/41 通过；`sh -n tv-side/cec-bridge.sh`、`git diff --check` 通过。已保存的实机
+HDMI1 TIF dump（mitv-hub 的 `.local/tv-input-active-probe.txt`）分别经 host awk 与
+BusyBox awk 解析为 input 23，验证使用本地假 dumpsys，未连接设备。
+
+实机应在一次 PS5 进/出游戏过程同时记录以下时间线，由主代理进行：
+
+1. 桥接 `daemon.log` 的 CEC request、activate trigger、input already active/input ok；
+2. `dumpsys hdmi_control` history 中的**新接收** Active Source/Image/Text View On，而非只看最终路由；
+3. ActivityManager 的 EXTSRC_PLAY 启动/投递、ExternalSourceActivity 的 onNewIntent/source/tune 路径；
+4. MTK_KL 时序与 `MtkTvInput(HdmiSelStatusThread)(HDMI)` 的 LOSS/LOCKED，记录刷新率、HDR/VRR
+   是否随游戏发生变化；同时核对 TIF main session 与前台。
+
+若看到同源重复消息后只记录 skip、没有对应 EXTSRC_PLAY，但画面仍短黑，则应继续定位
+HDMI 时序/HDR/VRR 握手，不能声称该代码修复会消除链路重新锁定所需的黑屏。
+TIF 查询在现有诊断 root 域中的可用性也需实机只读验证；不可用时本修复安全回退，
+但不会获得同源抑制收益。
+
+
+### Android 原生 awk 兼容性补修
+
+主代理随后部署首版，实机保护回退到原选择逻辑。定位到 walle 的原生 awk 无法执行
+一元逻辑非：最小 `awk 'BEGIN {x=1; print !x}'` 即报
+`illegal arithmetic operator 345`。首版的 `!selected` 在 dump 第 2 行触发该错误；
+host awk 和 BusyBox awk 均没有暴露这一差异。解析失败时不会错误跳过切源，但同源抑制失效。
+
+本地补修将新解析器的一元非全部改为显式 `== 0`，保留 `!=`、`!~`，两者经实机验证正常。
+只读隔离测试将本地新解析器与 fixture 传入电视原生 awk，不修改运行脚本或切源：
+4 个物理端口、BinderProxy、空数据、无主会话、权限拒绝文本、CEC child、未知 token 和
+已保存真实当前 HDMI1 dump 共 11 项均通过，真实 dump 解析为 input 23。
+可按需明确指定已授权电视，复跑兼容性检查：
+
+```sh
+python3 -B tests/check_android_awk.py --serial '<TV_IP>:5555'
+# 另可加 --fixture '<本地已保存的TIF dump>' --expected-input 23
+```
+
+该脚本只执行隔离 `printf | awk`，不上传文件、不切源、不启动服务，普通 unittest 不会
+自动访问设备。补修后 41 项本地回归在默认 shell 与 BusyBox ash 下仍全部通过。
+补修部署及新 daemon 实际 skip 日志由主代理另行核验。
+
+### 2026-10-26 实际部署结果
+
+修正Android awk兼容性后已实际部署，原脚本备份为电视上的`cec-bridge.sh.pre-20261026`。新daemon PID26578。直接读取实机当前TIF得到input23，`already_showing_input 23`返回0。
+
+16:13:24 Apple TV真实请求触发一次input23选择，16:13:26记录input ok；16:13:28后续同源请求记录`input already active src=8 input=23; skip reselect (TIF main + foreground)`，没有再次执行TvService选择。同期独立输入采集返回HDMI1 observed 3840×2160/60Hz/逐行/Dolby Vision。这证明新root守护进程的真实读取与抑制分支生效，不只是host测试通过。
+
+PS5进出游戏场景本轮没有现场复现，不能据Apple TV去重验证声称PS5的每次黑屏已消除。用户反馈为仅进出游戏时短黑、游戏内稳定。PS5官方支持文档说明HDR自动/按支持输出、120Hz、VRR与ALLM的设置行为；模式重新锁定是待对照的解释，本轮未关闭这些画质功能。参考：https://www.playstation.com/en-us/support/hardware/ps5-4k-resolution-guide/ 。

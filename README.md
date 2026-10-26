@@ -65,9 +65,12 @@ Apple TV / PS5 ──HDMI-CEC──> 小米电视
    - 仅在息屏时先通过 `service call power 9 ...` 唤醒（root 域读不到 `/proc/uptime`，用
      `mLastSleepTime` 作 eventTime）。
    - 唤醒后等 `mWakefulness=Awake`，sleep 2 秒让 tvhome 落定；电视原本亮屏时直接切输入。
-   - 每个新请求至少通过 `TvService` transaction 3000 执行一次真实输入选择，再检查
-     `mActiveRoutingPath` 和 `mResumedActivity`。CEC 可能先改 path，且 PS5 与 Apple TV
-     共用同一个输入 Activity，因此不能凭这两个值提前跳过切源。
+   - 电视原本已亮屏，且 `tv_input` 当前用户的 **mainSessionToken 对应目标物理 HDMI**、
+     前台也为 `ExternalSourceActivity` 时，跳过重复输入选择，避免同源 CEC 重报打断画面。
+     否则仍通过 `TvService` transaction 3000 执行真实输入选择；息屏唤醒也保留一次选择。
+   - CEC 可能先改 path，且 PS5 与 Apple TV 共用同一输入 Activity；仅
+     `mActiveRoutingPath` + `mResumedActivity` 不足以提前跳过。TIF 不可读或关联不明确时
+     回退原选择路径，调用后继续用 routing path 和前台校验。
    - 最多尝试 5 次；同设备正在处理的消息合并，新设备请求取消旧任务。没有全局 20 秒冷却。
    - 启动和 CEC 历史游标丢失时重新建立基线，不重放旧消息；不按设备品牌写特殊规则。
 
