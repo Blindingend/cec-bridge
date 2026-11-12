@@ -380,3 +380,42 @@ python3 -B tests/check_android_awk.py --serial '<TV_IP>:5555'
 16:13:24 Apple TV真实请求触发一次input23选择，16:13:26记录input ok；16:13:28后续同源请求记录`input already active src=8 input=23; skip reselect (TIF main + foreground)`，没有再次执行TvService选择。同期独立输入采集返回HDMI1 observed 3840×2160/60Hz/逐行/Dolby Vision。这证明新root守护进程的真实读取与抑制分支生效，不只是host测试通过。
 
 PS5进出游戏场景本轮没有现场复现，不能据Apple TV去重验证声称PS5的每次黑屏已消除。用户反馈为仅进出游戏时短黑、游戏内稳定。PS5官方支持文档说明HDR自动/按支持输出、120Hz、VRR与ALLM的设置行为；模式重新锁定是待对照的解释，本轮未关闭这些画质功能。参考：https://www.playstation.com/en-us/support/hardware/ps5-4k-resolution-guide/ 。
+
+## 11. 2026-11-12 服务停止与自启恢复
+
+11月11日经pve检查，电视网络和原厂MiLink服务正常，地址未变，但ADB与MiTV控制端口均拒绝连接。11月12日用户重新启用ADB后继续只读核查，发现：
+
+- 没有运行中的CEC守护进程。`daemon.pid`残留5500，但该PID已经属于`com.xiaomi.mi_connect_service`，不能用PID文件或`kill -0`单独判断服务存活，更不能直接杀这个PID。
+- 心跳最后更新为11月7日；最后一次启动器日志为11月3日。当前电视已于11月12日重新启动过，旧PID、心跳和锁只是残留文件。
+- 辅助APK `io.github.cecbridge`仍已安装、未禁用，但处于`stopped=true`；JobScheduler中没有它的任务。另一个电视控制APK也处于stopped状态，本次没有恢复或启动它。
+- 四个运行脚本均与`3f98c9a`完全一致，未发现脚本被改写。`keep-adb`存在、`disabled`不存在。因此已证实的是“守护进程停止，辅助APK停止且自启任务缺失”，不是新的CEC报文解析缺陷。
+- 现存日志没有记录是谁或什么机制停止了APK，不能归因于用户清后台、系统升级或某个具体进程；启动器最后日志时间也不能当成APK准确被停止时间。
+
+21:16:16（Asia/Shanghai）启动现有辅助APK入口，恢复既有逻辑，没有重装APK或替换脚本：
+
+```sh
+# 先读取电源、前台、disabled标记、PID对应cmdline与心跳；保留原始日志。
+# 确认本轮需要恢复CEC且没有有意停用后，再执行：
+adb -s '<TV_IP>:5555' shell am start -n io.github.cecbridge/.MainActivity
+```
+
+此入口调用启动器、注册任务后立即finish，回到原桌面。避免使用`am start -W`等待这个没有界面的瞬时Activity：本次实际服务已启动后，`-W`客户端仍等待显示结果；已精确结束等待客户端，没有停止恢复后的服务。
+
+恢复后实测：
+
+- `stopped=false`，新守护进程PID14297，心跳持续刷新；启动器正确识别旧PID已非本脚本并回收过期锁，没有误杀旧PID对应的系统进程。
+- 15分钟周期任务4242和120秒持久链重新出现，均标记`PERSISTED`。21:18:20任务4243自然运行并续约4244；21:20:23任务4244自然运行并续约4243。两次启动器均确认同一daemon仍在运行，未重复启动。没有用`cmd jobscheduler run -f`冒充自然调度。
+- 电视恢复前后保持Awake / Display ON，前台仍为MiTV Hub桌面；没有重启电视、主动唤醒外设、切换输入、改PS5画质或开启摄像头/麦克风。守护进程启动后没有重放历史CEC事件。
+- 本次只验证运行恢复、心跳和自然看门狗链；没有重启电视验证本次跨启动恢复，也没有新的真实遥控请求完成端到端切源验收。下一次正常重启和真实外设请求仍需对应日志确认，不能用任务存在或旧验收代替。
+
+后续若再次失效，应先检查APK stopped状态、任务是否仍在、PID身份及心跳是否新鲜，再看CEC历史；不能只读`daemon.pid`就报告“仍在运行”。自启链恢复也不证明再次进入stopped状态后能自行恢复，仍需查清停用来源。本次无需修改CEC匹配或同源保护逻辑。
+
+简化排查命令（读取JobScheduler时仅筛选本应用，避免保存其他应用信息）：
+
+```sh
+adb -s '<TV_IP>:5555' shell dumpsys package io.github.cecbridge
+adb -s '<TV_IP>:5555' shell 'cat /storage/emulated/0/cec-bridge/daemon.pid; cat /storage/emulated/0/cec-bridge/heartbeat'
+adb -s '<TV_IP>:5555' shell 'tail -20 /storage/emulated/0/cec-bridge/launch.log; tail -20 /storage/emulated/0/cec-bridge/daemon.log'
+```
+
+精简现场证据保存在关联mitv-hub工作区的忽略目录`.local/cec-status-20261112/`。本机可用技能目录仍未找到`yx-workflow`或`agent-work-tracker`，本次没有写入Obsidian；本节保留调查与恢复记录。
